@@ -14,7 +14,7 @@ from freqtrade.strategy import stoploss_from_open
 
 
 class ichiV1_plus(IStrategy):
-
+    #can_short = True
     # NOTE: settings as of the 25th july 21
     # Buy hyperspace params:
     buy_params = {
@@ -31,31 +31,38 @@ class ichiV1_plus(IStrategy):
         # 基础趋势指标
         "sell_trend_indicator": "trend_close_2h",
         "sell_short_trend": "trend_close_5m",
-        
+
         # 震荡市场过滤参数
         "adx_threshold": 25,  # ADX阈值，低于此值视为震荡市场
         "bb_width_percentile": 30,  # 布林带宽度百分位数阈值
-        
+
         # 确认指标阈值
         "rsi_overbought": 70,  # RSI超买阈值
         "volume_confirmation": 1.2,  # 成交量确认倍数
         "trend_consistency_min": 0.3,  # 趋势一致性最小值
-        
+
         # 分级卖出阈值
         "partial_sell_ratio": 0.4,  # 部分卖出比例
         "strong_sell_confirmation": 3,  # 强卖出信号确认数量
     }
 
     # ROI table:
+    #minimal_roi = {
+    #    "0": 0.059,
+    #    "10": 0.037,
+    #    "41": 0.012,
+    #    "115": 0
+    #}
+
     minimal_roi = {
-        "0": 0.059,
-        "10": 0.037,
-        "41": 0.012,
-        "114": 0
+        "0": 0.03,     # 开仓就拉升，3% 止盈
+        "60": 0.02,    # 1 小时后，2% 就能走
+        "240": 0.01,   # 4 小时后，1% 就能走
+        "720": 0       # 12 小时后，保本退出
     }
 
     # Stoploss:
-    stoploss = -0.275
+    stoploss = -0.255
 
     # Optimal timeframe for the strategy
     timeframe = '15m'
@@ -63,10 +70,10 @@ class ichiV1_plus(IStrategy):
     startup_candle_count = 96
     process_only_new_candles = False
 
-    trailing_stop = False
-    #trailing_stop_positive = 0.002
-    #trailing_stop_positive_offset = 0.025
-    #trailing_only_offset_is_reached = True
+    trailing_stop = True
+    trailing_stop_positive = 0.01
+    trailing_stop_positive_offset = 0.03
+    trailing_only_offset_is_reached = True
 
     use_exit_signal = True
     exit_profit_only = False
@@ -102,6 +109,9 @@ class ichiV1_plus(IStrategy):
         }
     }
 
+    # 固定杠杆模式：直接使用常量倍数
+    fixed_leverage: float = 2.0
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
 
         heikinashi = qtpylib.heikinashi(dataframe)
@@ -135,13 +145,13 @@ class ichiV1_plus(IStrategy):
         dataframe['adx'] = ta.ADX(dataframe)
         dataframe['atr'] = ta.ATR(dataframe)
         dataframe['atr_pct'] = (dataframe['atr'] / dataframe['close']) * 100
-        
+
         # 布林带用于波动性分析
         bollinger = qtpylib.bollinger_bands(dataframe['close'], window=20, stds=2)
         dataframe['bb_upper'] = bollinger['upper']
         dataframe['bb_lower'] = bollinger['lower']
         dataframe['bb_width'] = ((dataframe['bb_upper'] - dataframe['bb_lower']) / dataframe['close']) * 100
-        
+
         # 趋势一致性评分 (多时间框架趋势方向一致性)
         trend_directions = []
         timeframes = ['5m', '15m', '30m', '1h', '2h', '4h']
@@ -149,19 +159,19 @@ class ichiV1_plus(IStrategy):
             trend_col = f'trend_close_{tf}'
             if trend_col in dataframe.columns:
                 trend_directions.append((dataframe[trend_col] > dataframe[trend_col].shift(1)).astype(int))
-        
+
         if trend_directions:
             dataframe['trend_consistency'] = sum(trend_directions) / len(trend_directions)
         else:
             dataframe['trend_consistency'] = 0.5
-            
+
         # RSI用于超买确认
         dataframe['rsi'] = ta.RSI(dataframe)
-        
+
         # 成交量相关指标
         dataframe['volume_sma'] = ta.SMA(dataframe['volume'], timeperiod=20)
         dataframe['volume_ratio'] = dataframe['volume'] / dataframe['volume_sma']
-        
+
         # 震荡市场标识 (ADX < 25 且 BB宽度较小)
         dataframe['is_ranging'] = (
             (dataframe['adx'] < 25) & 
@@ -358,3 +368,18 @@ class ichiV1_plus(IStrategy):
         )
 
         return dataframe
+
+    # =============================================================
+    # 固定杠杆：仅返回设定或配置覆盖的 fixed_leverage
+    # -------------------------------------------------------------
+    def leverage(self, pair: str, current_time: datetime, current_rate: float,
+                 proposed_leverage: float, max_leverage: float, entry_tag: str, side: str, **kwargs) -> float:
+        if hasattr(self, 'config'):
+            sp = self.config.get('strategy_parameters', {}) or {}
+            cfg_val = sp.get('fixed_leverage')
+            if cfg_val is not None:
+                try:
+                    self.fixed_leverage = float(cfg_val)
+                except Exception:
+                    pass
+        return float(max(1.0, min(self.fixed_leverage, max_leverage)))
