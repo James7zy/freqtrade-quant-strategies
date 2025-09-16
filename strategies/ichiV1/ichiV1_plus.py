@@ -8,9 +8,7 @@ import numpy as np
 pd.options.mode.chained_assignment = None  # default='warn'
 import technical.indicators as ftt
 from functools import reduce
-from datetime import datetime, timedelta
-from freqtrade.strategy import merge_informative_pair
-from freqtrade.strategy import stoploss_from_open
+from datetime import datetime
 
 
 class ichiV1_plus(IStrategy):
@@ -54,15 +52,35 @@ class ichiV1_plus(IStrategy):
     #    "115": 0
     #}
 
+    # ============= 新 ROI 阶梯（快速锁定型） =============
+    # 设计依据：你实盘的中位持仓 ~30min；>60min 后收益率快速衰减。
+    # 策略：前 1 小时逐步降低要求，180~240 分钟后基本撤退，防止资金囚禁。
+    # 可在后续根据波动性（ATR%）动态切换不同模板（fast/balanced/trend）。
     minimal_roi = {
-        "0": 0.03,     # 开仓就拉升，3% 止盈
-        "60": 0.02,    # 1 小时后，2% 就能走
-        "240": 0.01,   # 4 小时后，1% 就能走
-        "720": 0       # 12 小时后，保本退出
+        "0":   0.030,   # 首阶段：抓动量
+        "15":  0.024,   # 15 分钟后没到 3% -> 降一点防回吐
+        "30":  0.018,   # 进入震荡保护
+        "60":  0.012,   # 1 小时后还能给 1.2%
+        "90":  0.008,
+        "120": 0.005,
+        "180": 0.003,   # 3 小时后只要覆盖手续费即可
+        "240": 0.000    # 4 小时仍不行 -> 保本退出
     }
 
-    # Stoploss:
-    stoploss = -0.255
+    # ============= 止损配置 =============
+    # 原 -25.5% 过深，放任尾部风险；改为较紧的基础止损。
+    # 建议：核心固定止损 + 结构/时间/动态 ATR 收紧（后续可加 custom_stoploss）。
+    stoploss = -0.12  # 基础硬止损（可回测 -0.10/-0.12/-0.14 三档择优）
+
+    # 预留：动态止损调节参数（可在 custom_stoploss 中引用）
+    dyn_stop_params = {
+        'atr_period': 14,
+        'atr_mult_initial': 3.0,      # 初始宽（进入后 0~15min）
+        'atr_mult_trend': 2.2,        # 当趋势一致性高时（trend_consistency>0.7）
+        'atr_mult_decay': 1.8,        # 持仓 >90min 收紧
+        'time_tighten_min': 60,       # 60 分钟后开始考虑收紧
+        'min_stop': -0.055            # 动态收紧的底线（避免过度紧）
+    }
 
     # Optimal timeframe for the strategy
     timeframe = '15m'
@@ -70,14 +88,44 @@ class ichiV1_plus(IStrategy):
     startup_candle_count = 96
     process_only_new_candles = False
 
+    # ============= 追踪止盈优化 =============
+    # 调整：降低启动门槛 offset（3% -> 2.2%），细化正向锁定（1% -> 0.9%）。
+    # 目的：让 1.5%~2.8% 的常见强势波段不全部回吐。
     trailing_stop = True
-    trailing_stop_positive = 0.01
-    trailing_stop_positive_offset = 0.03
+    trailing_stop_positive = 0.009             # 启用后允许最大回撤 0.9%
+    trailing_stop_positive_offset = 0.022      # 先达到 2.2% 才启用（防止震荡提前触发）
     trailing_only_offset_is_reached = True
+
+    # 扩展：可在 custom_exit / custom_stoploss 中实现“分批止盈 + 回撤强化”
+    partial_exit_params = {
+        'enable': True,
+        'first_take_profit': 0.025,   # 浮盈 ≥2.5% 触发第一次部分减仓
+        'first_pct': 0.5,             # 减仓 50%
+        'second_take_profit': 0.05,   # 剩余仓位如果继续拉升到 5%
+        'second_trail_offset': 0.015  # 第二阶段更紧追踪
+    }
+
+    # 超时退出：超过 X 分钟仍未达到最低阈值（如 <0.4%）主动退出释放资金
+    timeout_exit_params = {
+        'enable': True,
+        'check_min': 90,      # 90 分钟
+        'profit_floor': 0.004 # 若 <0.4% 且无趋势改善信号则退出
+    }
+
+    # 峰值回撤退出：用于在获得一定利润后，价格出现较深回撤时锁定收益
+    drawdown_exit_params = {
+        'enable': True,
+        'min_profit': 0.03,     # 仅当曾经浮盈 ≥3% 时才启动回撤监控
+        'drawdown_pct': 0.015   # 从峰值回撤 ≥1.5%（绝对利润值）则触发退出
+    }
 
     use_exit_signal = True
     exit_profit_only = False
     ignore_roi_if_entry_signal = False
+    # 启用自定义动态止损逻辑（custom_stoploss 方法才会被调用）
+    use_custom_stoploss = True
+    # 启用仓位调整（DCA / 部分减仓 等功能需要）
+    position_adjustment_enable = True
 
     plot_config = {
         'main_plot': {
@@ -370,6 +418,160 @@ class ichiV1_plus(IStrategy):
         return dataframe
 
     # =============================================================
+    # 可选增强：custom_exit 钩子（需 freqtrade 支持版本）。
+    # 实现思路：
+    # 1. 如果 partial_exit_params.enable:
+    #       - 检查当前浮盈 profit_ratio >= first_take_profit 且 还未记录第一次减仓 -> 返回部分卖出 (通过 'sell' 标签 或使用 custom_exit_info)
+    #       - 第二次同理；可将 trailing_stop_positive 动态下调。
+    # 2. 如果 timeout_exit_params.enable:
+    #       - 持仓分钟数 > check_min 且 profit_ratio < profit_floor 且 trend_consistency < 阈值 -> 直接给出 exit。
+    # 3. 动态 ATR 止损：根据 dyn_stop_params 计算 ATR * 对应倍数，若当前跌破 open_rate*(1-动态止损) 则退出。
+    # 下面仅放置占位，不直接启用，以免与现有卖出逻辑冲突；需要启用时取消注释并结合策略回测调整。
+    # -------------------------------------------------------------
+    # def custom_exit(self, pair: str, trade, current_time: datetime, current_rate: float,
+    #                 current_profit: float, **kwargs):
+    #     # 示例：超时退出
+    #     if self.timeout_exit_params['enable']:
+    #         age_min = (current_time - trade.open_date_utc).total_seconds() / 60
+    #         if age_min > self.timeout_exit_params['check_min'] and \
+    #            current_profit < self.timeout_exit_params['profit_floor']:
+    #             return ("timeout_exit", "time_based")
+    #     # 示例：第一次部分获利（需检查 trade.nr_of_successful_exits 等属性 / position size）
+    #     # if self.partial_exit_params['enable'] and current_profit >= self.partial_exit_params['first_take_profit']:
+    #     #     return ("partial_1", "part_take")
+    #     return None
+
+    # =============================================================
+    # 动态止损: custom_stoploss
+    # 逻辑层次：
+    # 1) 基础硬止损 self.stoploss (-12%) 是底线
+    # 2) 根据持仓时间与趋势一致性(trend_consistency)逐步收紧
+    # 3) ATR * 不同倍数提供上限（更紧的止损限制）
+    # 4) 当浮盈超过一定阈值，锁定一部分利润（抬高止损）
+    # 返回值：距离开仓价的负比例(例如 -0.05)
+    # 注意：需 freqtrade 配置中启用 use_custom_stoploss
+    # =============================================================
+    def custom_stoploss(self, pair: str, trade, current_time: datetime,
+                        current_rate: float, current_profit: float, **kwargs):
+        try:
+            # 若 indicators 不可用（启动初期）直接返回原止损
+            if 'trend_consistency' not in trade.open_trade_price:
+                pass
+        except Exception:
+            pass
+
+        # 计算持仓分钟
+        age_min = (current_time - trade.open_date_utc).total_seconds() / 60
+
+        # 基础最大允许损失
+        base_stop = self.stoploss  # 例如 -0.12
+
+        # 动态 ATR 估算：使用最近的 dataframe（freqtrade 会在 kwargs 里传递）
+        dataframe = kwargs.get('dataframe')
+        dyn_stop = None
+        if dataframe is not None and len(dataframe) > 0 and 'atr' in dataframe.columns:
+            atr = float(dataframe['atr'].iloc[-1])
+            last_close = float(dataframe['close'].iloc[-1])
+            atr_pct = atr / last_close if last_close else 0
+            # 选取倍数
+            mult = self.dyn_stop_params['atr_mult_initial']
+            # 趋势一致性（使用最近行）
+            trend_consistency = dataframe['trend_consistency'].iloc[-1] if 'trend_consistency' in dataframe.columns else 0.5
+            if trend_consistency > 0.7:
+                mult = self.dyn_stop_params['atr_mult_trend']
+            if age_min > self.dyn_stop_params['time_tighten_min']:
+                mult = min(mult, self.dyn_stop_params['atr_mult_decay'])
+            dyn_stop_level = - atr_pct * mult
+            # 限制不超过 min_stop（例如 -5.5%）
+            dyn_stop = max(dyn_stop_level, self.dyn_stop_params['min_stop'])
+
+        # 时间收紧：随着时间推移，最大亏损容忍下降
+        time_stop = base_stop
+        if age_min > 180:
+            time_stop = max(time_stop, -0.06)
+        elif age_min > 120:
+            time_stop = max(time_stop, -0.075)
+        elif age_min > 60:
+            time_stop = max(time_stop, -0.09)
+
+        # 浮盈保护：当已获得一定利润，抬高止损（盈转亏保护）
+        profit_protect_stop = None
+        if current_profit > 0.05:       # >5%
+            profit_protect_stop = current_profit * 0.4 * -1  # 保留 60% 浮盈
+        elif current_profit > 0.03:     # >3%
+            profit_protect_stop = -0.015
+        elif current_profit > 0.02:     # >2%
+            profit_protect_stop = -0.02
+
+        # 汇总候选止损（取“最不允许亏得多”的，即较大的那个）
+        candidates = [base_stop]
+        if dyn_stop is not None:
+            candidates.append(dyn_stop)
+        candidates.append(time_stop)
+        if profit_protect_stop is not None:
+            candidates.append(profit_protect_stop)
+
+        final_stop = max(candidates)  # 例如在 -0.12 与 -0.055 之间取 -0.055
+
+        # 如果已经触及盈利阈值并且 trailing 已启动，可再略收紧
+        if current_profit > 0.06:
+            final_stop = max(final_stop, -0.025)
+
+        return final_stop
+
+    # =============================================================
+    # 自定义退出：超时 + 部分减仓
+    # 注意：部分减仓功能需 freqtrade 版本支持 position adjustments。
+    # 如果你的版本不支持 partial exits，你可以只返回一次性退出。
+    # 返回格式: (exit_reason, tag) 或 None
+    # =============================================================
+    def custom_exit(self, pair: str, trade, current_time: datetime,
+                    current_rate: float, current_profit: float, **kwargs):
+        # 记录并更新峰值浮盈，用于回撤退出逻辑
+        if not hasattr(trade, 'user_data') or trade.user_data is None:
+            trade.user_data = {}
+        peak_profit = trade.user_data.get('peak_profit', current_profit)
+        if current_profit > peak_profit:
+            peak_profit = current_profit
+            trade.user_data['peak_profit'] = peak_profit
+
+        # 超时退出
+        if self.timeout_exit_params['enable']:
+            age_min = (current_time - trade.open_date_utc).total_seconds() / 60
+            if age_min > self.timeout_exit_params['check_min'] and \
+               current_profit < self.timeout_exit_params['profit_floor']:
+                return ("timeout_exit", "time_based")
+
+        # 峰值回撤退出：当盈利达到阈值后出现显著回撤
+        if self.drawdown_exit_params['enable']:
+            if peak_profit >= self.drawdown_exit_params['min_profit'] and \
+               (peak_profit - current_profit) >= self.drawdown_exit_params['drawdown_pct'] and \
+               current_profit > 0:  # 仍是盈利区间才锁定
+                return ("drawdown_exit", "peak_retrace")
+
+        # 部分减仓逻辑（示例）
+        if self.partial_exit_params['enable']:
+            # 使用 trade.user_data 记录阶段
+            stage = None
+            if hasattr(trade, 'user_data') and isinstance(trade.user_data, dict):
+                stage = trade.user_data.get('partial_stage')
+            else:
+                trade.user_data = {}
+
+            # 第一次部分减仓
+            if current_profit >= self.partial_exit_params['first_take_profit'] and stage is None:
+                trade.user_data['partial_stage'] = 1
+                # 返回一个标签 - freqtrade 将按策略卖出(需要在配置中允许部分平仓)
+                return ("partial_1", f"part_{self.partial_exit_params['first_pct']}")
+
+            # 第二次部分减仓（更高目标）
+            if current_profit >= self.partial_exit_params['second_take_profit'] and stage == 1:
+                trade.user_data['partial_stage'] = 2
+                return ("partial_2", "trail_tight")
+
+        return None
+
+    # =============================================================
     # 固定杠杆：仅返回设定或配置覆盖的 fixed_leverage
     # -------------------------------------------------------------
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
@@ -383,3 +585,44 @@ class ichiV1_plus(IStrategy):
                 except Exception:
                     pass
         return float(max(1.0, min(self.fixed_leverage, max_leverage)))
+
+    # =============================================================
+    # 仓位调整：用于实现部分减仓 (partial take profit)
+    # 返回正数 -> 增加仓位 (DCA)；负数 -> 减仓；None -> 不调整
+    # =============================================================
+    def adjust_trade_position(self, trade, current_time: datetime, current_rate: float,
+                               current_profit: float, min_stake: float, max_stake: float,
+                               current_entry_rate: float, current_exit_rate: float,
+                               current_entry_profit: float, current_exit_profit: float, **kwargs):
+        if not self.partial_exit_params['enable']:
+            return None
+
+        # 初始化 user_data
+        if not hasattr(trade, 'user_data') or trade.user_data is None:
+            trade.user_data = {}
+        stage = trade.user_data.get('partial_stage')
+
+        # 当前持仓数量（以 amount 计算）
+        current_amount = trade.amount
+        if current_amount is None or current_amount <= 0:
+            return None
+
+        # 已经执行的部分退出次数（freqtrade 记录成功退出订单数）
+    # exits_done = trade.nr_of_successful_exits if hasattr(trade, 'nr_of_successful_exits') else 0
+
+        # 第一阶段部分减仓
+        if stage is None and current_profit >= self.partial_exit_params['first_take_profit']:
+            reduce_amt = current_amount * self.partial_exit_params['first_pct']
+            trade.user_data['partial_stage'] = 1
+            trade.user_data['peak_profit'] = max(trade.user_data.get('peak_profit', current_profit), current_profit)
+            # 返回负数表示减少仓位
+            return -reduce_amt
+
+        # 第二阶段：达到第二目标 -> 清仓（或可选择再留一小部分）
+        if stage == 1 and current_profit >= self.partial_exit_params['second_take_profit']:
+            # 这里选择全部卖出剩余仓位，你也可以改成只再卖出一半
+            trade.user_data['partial_stage'] = 2
+            trade.user_data['peak_profit'] = max(trade.user_data.get('peak_profit', current_profit), current_profit)
+            return -current_amount  # 剩余全平
+
+        return None
