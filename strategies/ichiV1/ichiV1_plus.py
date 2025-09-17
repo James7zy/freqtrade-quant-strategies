@@ -9,6 +9,8 @@ pd.options.mode.chained_assignment = None  # default='warn'
 import technical.indicators as ftt
 from functools import reduce
 from datetime import datetime
+import logging
+logger = logging.getLogger(__name__)
 
 
 class ichiV1_plus(IStrategy):
@@ -17,7 +19,7 @@ class ichiV1_plus(IStrategy):
     # Buy hyperspace params:
     buy_params = {
         "buy_trend_above_senkou_level": 1,
-        "buy_trend_bullish_level": 6,
+        "buy_trend_bullish_level": 5,
         "buy_fan_magnitude_shift_value": 3,
         "buy_min_fan_magnitude_gain": 1.002 # NOTE: Good value (Win% ~70%), alot of trades
         #"buy_min_fan_magnitude_gain": 1.008 # NOTE: Very save value (Win% ~90%), only the biggest moves 1.008,
@@ -67,10 +69,47 @@ class ichiV1_plus(IStrategy):
         "240": 0.000    # 4 小时仍不行 -> 保本退出
     }
 
+    # 备用 ROI 模板（后续可基于 ATR% / trend_consistency 切换）
+    roi_profiles = {
+        'fast': {"0":0.030, "15":0.024, "30":0.018, "60":0.012, "90":0.008, "120":0.005, "180":0.003, "240":0.0},
+        'balanced': {"0":0.035, "20":0.025, "60":0.015, "120":0.009, "180":0.004, "300":0.0},
+        'trend': {"0":0.045, "30":0.032, "90":0.020, "180":0.010, "360":0.004, "480":0.0}
+    }
+
+    def pick_roi_profile(self, dataframe: DataFrame) -> str:
+        """简单示例：根据最近 ATR% 和 趋势一致性决定 ROI 模板。"""
+        try:
+            if dataframe is None or len(dataframe) < 30:
+                return 'fast'
+            atr_recent = dataframe['atr'].tail(30)
+            close_recent = dataframe['close'].tail(30)
+            atr_pct_series = atr_recent / close_recent
+            atr_med = float(atr_pct_series.median()) if atr_pct_series is not None else 0.0
+            trend_cons = float(dataframe['trend_consistency'].iloc[-1]) if 'trend_consistency' in dataframe.columns else 0.5
+            # 粗略条件：低波动 & 高趋势 -> trend；中波动 -> balanced；否则 fast
+            if atr_med < 0.015 and trend_cons > 0.7:
+                return 'trend'
+            if atr_med < 0.025 and trend_cons > 0.55:
+                return 'balanced'
+            return 'fast'
+        except Exception:
+            return 'fast'
+
+    def ensure_roi_profile(self, trade, dataframe: DataFrame):
+        """在首次使用时为 trade 绑定一个 roi_profile，后续可用于自定义逻辑/日志分析。"""
+        try:
+            if not hasattr(trade, 'user_data') or trade.user_data is None:
+                trade.user_data = {}
+            if 'roi_profile' not in trade.user_data:
+                profile = self.pick_roi_profile(dataframe)
+                trade.user_data['roi_profile'] = profile
+        except Exception:
+            pass
+
     # ============= 止损配置 =============
     # 原 -25.5% 过深，放任尾部风险；改为较紧的基础止损。
     # 建议：核心固定止损 + 结构/时间/动态 ATR 收紧（后续可加 custom_stoploss）。
-    stoploss = -0.12  # 基础硬止损（可回测 -0.10/-0.12/-0.14 三档择优）
+    stoploss = -0.10  # 基础硬止损（可回测 -0.10/-0.12/-0.14 三档择优）
 
     # 预留：动态止损调节参数（可在 custom_stoploss 中引用）
     dyn_stop_params = {
@@ -92,8 +131,8 @@ class ichiV1_plus(IStrategy):
     # 调整：降低启动门槛 offset（3% -> 2.2%），细化正向锁定（1% -> 0.9%）。
     # 目的：让 1.5%~2.8% 的常见强势波段不全部回吐。
     trailing_stop = True
-    trailing_stop_positive = 0.009             # 启用后允许最大回撤 0.9%
-    trailing_stop_positive_offset = 0.022      # 先达到 2.2% 才启用（防止震荡提前触发）
+    trailing_stop_positive = 0.007             # 启用后允许最大回撤 0.9%
+    trailing_stop_positive_offset = 0.016      # 先达到 1.6% 才启用（防止震荡提前触发）
     trailing_only_offset_is_reached = True
 
     # 扩展：可在 custom_exit / custom_stoploss 中实现“分批止盈 + 回撤强化”
@@ -119,6 +158,14 @@ class ichiV1_plus(IStrategy):
         'drawdown_pct': 0.015   # 从峰值回撤 ≥1.5%（绝对利润值）则触发退出
     }
 
+    # 早期止损截断：开仓初期不允许演变为深坑
+    early_loss_cut_params = {
+        'enable': True,
+        'window_min': 25,       # 仅在开仓前 25 分钟内有效
+        'max_loss': -0.035,     # 超过 -3.5% 直接砍（防止拖到 -8%/ -10%）
+        'atr_mult': 2.2         # 或 ATR*2.2 与 max_loss 取更紧者
+    }
+
     use_exit_signal = True
     exit_profit_only = False
     ignore_roi_if_entry_signal = False
@@ -126,6 +173,21 @@ class ichiV1_plus(IStrategy):
     use_custom_stoploss = True
     # 启用仓位调整（DCA / 部分减仓 等功能需要）
     position_adjustment_enable = True
+
+    # 调试日志开关（运行时可通过 self.config['strategy_parameters']['debug'] 覆盖）
+    debug_enabled: bool = False
+
+    def dlog(self, msg: str):
+        """统一调试输出，可按需跳转到 telegram 或文件。"""
+        try:
+            if hasattr(self, 'config'):
+                sp = self.config.get('strategy_parameters', {}) or {}
+                if 'debug' in sp:
+                    self.debug_enabled = bool(sp.get('debug'))
+            if self.debug_enabled:
+                logger.info(f"[ichiV1_plus] {msg}")
+        except Exception:
+            pass
 
     plot_config = {
         'main_plot': {
@@ -453,12 +515,15 @@ class ichiV1_plus(IStrategy):
     # =============================================================
     def custom_stoploss(self, pair: str, trade, current_time: datetime,
                         current_rate: float, current_profit: float, **kwargs):
-        try:
-            # 若 indicators 不可用（启动初期）直接返回原止损
-            if 'trend_consistency' not in trade.open_trade_price:
-                pass
-        except Exception:
-            pass
+        # 说明：custom_stoploss 只需返回一个“距离开仓价的最大亏损百分比”（负值）。
+        # Freqtrade 会仍然以 "stop_loss" 作为 exit_reason；不会出现 "custom_stoploss"。
+        # 若你在回测里只看到 custom_exit 的自定义标签，而没有“体现” custom_stoploss，
+        # 这通常表示：
+        #   1) 价格没有触发你动态计算出来的止损线（最终通过 ROI / custom_exit / trailing 退出）
+        #   2) 你的逻辑返回的 final_stop 比基础 stoploss 更宽松（或与基础相同），未实际生效
+        #   3) 之前的错误检查（已移除）没有真正起作用，但也无功能；现在改为更明确的 dataframe 保护。
+
+        dataframe = kwargs.get('dataframe')  # engine 在 backtest/实时都会传最后一批 dataframe
 
         # 计算持仓分钟
         age_min = (current_time - trade.open_date_utc).total_seconds() / 60
@@ -467,7 +532,6 @@ class ichiV1_plus(IStrategy):
         base_stop = self.stoploss  # 例如 -0.12
 
         # 动态 ATR 估算：使用最近的 dataframe（freqtrade 会在 kwargs 里传递）
-        dataframe = kwargs.get('dataframe')
         dyn_stop = None
         if dataframe is not None and len(dataframe) > 0 and 'atr' in dataframe.columns:
             atr = float(dataframe['atr'].iloc[-1])
@@ -503,6 +567,20 @@ class ichiV1_plus(IStrategy):
         elif current_profit > 0.02:     # >2%
             profit_protect_stop = -0.02
 
+        # 早期快速截断：限制初期深亏
+        if self.early_loss_cut_params['enable'] and age_min <= self.early_loss_cut_params['window_min'] and current_profit < 0:
+            dataframe = kwargs.get('dataframe')
+            atr_stop = None
+            if dataframe is not None and 'atr' in dataframe.columns and len(dataframe) > 0:
+                atr = float(dataframe['atr'].iloc[-1])
+                last_close = float(dataframe['close'].iloc[-1])
+                atr_pct = atr / last_close if last_close else 0
+                atr_stop_level = - atr_pct * self.early_loss_cut_params['atr_mult']
+                atr_stop = atr_stop_level
+            early_cap = max(self.early_loss_cut_params['max_loss'], atr_stop) if atr_stop is not None else self.early_loss_cut_params['max_loss']
+            base_stop = max(base_stop, early_cap)
+            self.dlog(f"EarlyCut active pair={pair} age={age_min:.1f}m profit={current_profit:.4f} early_cap={early_cap:.4f}")
+
         # 汇总候选止损（取“最不允许亏得多”的，即较大的那个）
         candidates = [base_stop]
         if dyn_stop is not None:
@@ -511,11 +589,50 @@ class ichiV1_plus(IStrategy):
         if profit_protect_stop is not None:
             candidates.append(profit_protect_stop)
 
-        final_stop = max(candidates)  # 例如在 -0.12 与 -0.055 之间取 -0.055
+        final_stop = max(candidates)
+        # 安全格式化 dyn_stop，避免 None 触发格式化异常
+        dyn_str = f"{dyn_stop:.4f}" if dyn_stop is not None else "None"
+        self.dlog(
+            f"STOP pair={pair} age={age_min:.0f}m profit={current_profit:.4f} "
+            f"base={base_stop:.4f} dyn={dyn_str} time={time_stop:.4f} final={final_stop:.4f}"
+        )
+
+        # 记录 stoploss 演变，方便事后分析（例如导出 trade.user_data）
+        try:
+            if not hasattr(trade, 'user_data') or trade.user_data is None:
+                trade.user_data = {}
+            hist = trade.user_data.get('stop_history')
+            if hist is None:
+                hist = []
+            # 仅每 5 分钟记录一次，避免列表过长
+            if len(hist) == 0 or (age_min - hist[-1]['age_min']) >= 5:
+                hist.append({
+                    'ts': current_time.isoformat(),
+                    'age_min': age_min,
+                    'profit': current_profit,
+                    'final_stop': final_stop,
+                    'dyn': dyn_stop,
+                })
+                trade.user_data['stop_history'] = hist
+        except Exception:
+            pass
 
         # 如果已经触及盈利阈值并且 trailing 已启动，可再略收紧
         if current_profit > 0.06:
             final_stop = max(final_stop, -0.025)
+
+        # 若已进行过第一次部分减仓（tight_trail 标记），进一步抬高保护
+        try:
+            if hasattr(trade, 'user_data') and isinstance(trade.user_data, dict) and trade.user_data.get('tight_trail'):
+                # 根据当前盈利分层抬高最低止损线
+                if current_profit >= 0.05:
+                    final_stop = max(final_stop, -0.015)
+                elif current_profit >= 0.035:
+                    final_stop = max(final_stop, -0.02)
+                else:
+                    final_stop = max(final_stop, -0.025)
+        except Exception:
+            pass
 
         return final_stop
 
@@ -540,6 +657,7 @@ class ichiV1_plus(IStrategy):
             age_min = (current_time - trade.open_date_utc).total_seconds() / 60
             if age_min > self.timeout_exit_params['check_min'] and \
                current_profit < self.timeout_exit_params['profit_floor']:
+                self.dlog(f"EXIT timeout pair={pair} age={age_min:.1f} profit={current_profit:.4f}")
                 return ("timeout_exit", "time_based")
 
         # 峰值回撤退出：当盈利达到阈值后出现显著回撤
@@ -547,7 +665,19 @@ class ichiV1_plus(IStrategy):
             if peak_profit >= self.drawdown_exit_params['min_profit'] and \
                (peak_profit - current_profit) >= self.drawdown_exit_params['drawdown_pct'] and \
                current_profit > 0:  # 仍是盈利区间才锁定
+                self.dlog(f"EXIT drawdown pair={pair} peak={peak_profit:.4f} profit={current_profit:.4f}")
                 return ("drawdown_exit", "peak_retrace")
+
+        # 结构性风险退出：在已有一定盈利后跌破关键转换线
+        if current_profit >= 0.03 and 'tenkan_sen' in kwargs.get('dataframe', {}).columns:
+            df = kwargs.get('dataframe')
+            if df is not None and len(df) > 0:
+                tenkan = df['tenkan_sen'].iloc[-1]
+                close_price = df['close'].iloc[-1]
+                rsi_val = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
+                if close_price < tenkan and rsi_val > 70:
+                    self.dlog(f"EXIT structure pair={pair} profit={current_profit:.4f} close<tenkan RSI>{rsi_val:.1f}")
+                    return ("structure_exit", "tenkan_break")
 
         # 部分减仓逻辑（示例）
         if self.partial_exit_params['enable']:
@@ -561,12 +691,16 @@ class ichiV1_plus(IStrategy):
             # 第一次部分减仓
             if current_profit >= self.partial_exit_params['first_take_profit'] and stage is None:
                 trade.user_data['partial_stage'] = 1
+                # 标记以便后续 trailing 或 stoploss 可进一步收紧
+                trade.user_data['tight_trail'] = True
+                self.dlog(f"EXIT partial_1 pair={pair} profit={current_profit:.4f} reduce={self.partial_exit_params['first_pct']}")
                 # 返回一个标签 - freqtrade 将按策略卖出(需要在配置中允许部分平仓)
                 return ("partial_1", f"part_{self.partial_exit_params['first_pct']}")
 
             # 第二次部分减仓（更高目标）
             if current_profit >= self.partial_exit_params['second_take_profit'] and stage == 1:
                 trade.user_data['partial_stage'] = 2
+                self.dlog(f"EXIT partial_2 pair={pair} profit={current_profit:.4f}")
                 return ("partial_2", "trail_tight")
 
         return None
@@ -614,7 +748,9 @@ class ichiV1_plus(IStrategy):
         if stage is None and current_profit >= self.partial_exit_params['first_take_profit']:
             reduce_amt = current_amount * self.partial_exit_params['first_pct']
             trade.user_data['partial_stage'] = 1
+            trade.user_data['tight_trail'] = True
             trade.user_data['peak_profit'] = max(trade.user_data.get('peak_profit', current_profit), current_profit)
+            self.dlog(f"ADJUST partial_1 pair={trade.pair} profit={current_profit:.4f} reduce_amt={reduce_amt:.6f}")
             # 返回负数表示减少仓位
             return -reduce_amt
 
@@ -623,6 +759,7 @@ class ichiV1_plus(IStrategy):
             # 这里选择全部卖出剩余仓位，你也可以改成只再卖出一半
             trade.user_data['partial_stage'] = 2
             trade.user_data['peak_profit'] = max(trade.user_data.get('peak_profit', current_profit), current_profit)
+            self.dlog(f"ADJUST partial_2 pair={trade.pair} profit={current_profit:.4f} close_all_amt={current_amount:.6f}")
             return -current_amount  # 剩余全平
 
         return None
