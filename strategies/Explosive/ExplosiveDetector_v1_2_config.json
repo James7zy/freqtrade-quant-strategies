@@ -1,0 +1,315 @@
+{
+    "max_open_trades": 1,
+    "stake_currency": "USDT",
+    "stake_amount": 10,
+    "dry_run": true,
+    "cancel_open_orders_on_exit": true,
+
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "ccxt_config": {
+            "enableRateLimit": true,
+            "rateLimit": 150
+        },
+        "pair_whitelist": [
+            "BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "DOT/USDT",
+            "LINK/USDT", "XRP/USDT", "LTC/USDT", "BCH/USDT", "UNI/USDT",
+            "ATOM/USDT", "VET/USDT", "FIL/USDT", "TRX/USDT", "ETC/USDT",
+            "XLM/USDT", "THETA/USDT", "ALGO/USDT", "AAVE/USDT", "MKR/USDT",
+            "MATIC/USDT", "SOL/USDT", "AVAX/USDT", "LUNA/USDT", "FTM/USDT"
+        ],
+        "pair_blacklist": []
+    },
+
+    "timeframe": "1h",
+    "strategy": "ExplosiveDetector_v1_2",
+    "strategy_path": "strategies/QUANT_ALEX/",
+
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+
+    "exit_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+
+    "telegram": {
+        "enabled": true,
+        "token": "YOUR_TELEGRAM_BOT_TOKEN",
+        "chat_id": "YOUR_CHAT_ID",
+        "notification_settings": {
+            "status": "on",
+            "warning": "on",
+            "startup": "on",
+            "entry": "on",
+            "entry_fill": "on",
+            "exit": "on",
+            "exit_fill": "on",
+            "protection_trigger": "on",
+            "protection_trigger_global": "on",
+            "show_candle": "on"
+        }
+    },
+
+    "api_server": {
+        "enabled": true,
+        "listen_ip_address": "127.0.0.1",
+        "listen_port": 8080,
+        "verbosity": "error",
+        "jwt_secret_key": "YOUR_JWT_SECRET",
+        "CORS_origins": [],
+        "username": "admin",
+        "password": "YOUR_PASSWORD"
+    },
+
+    "dataformat_ohlcv": "json",
+    "dataformat_trades": "jsongz",
+
+    "strategy_parameters": {
+        "comment": "ExplosiveDetector v1.2 ML增强参数配置",
+
+        "volume_surge_threshold": 3.0,
+        "price_momentum_threshold": 0.10,
+        "rsi_recovery_threshold": 35.0,
+        "breakout_strength_threshold": 2.0,
+        "volume_lookback": 12,
+        "momentum_lookback": 6,
+
+        "sentiment_weight": 0.25,
+        "social_heat_weight": 0.20,
+        "news_lookback_hours": 12,
+        "enable_sentiment_analysis": true,
+        "enable_social_analysis": true,
+
+        "ml_model_weight": 0.35,
+        "correlation_threshold": 0.6,
+        "onchain_weight": 0.25,
+        "futures_oi_weight": 0.20,
+
+        "enable_ml_predictions": true,
+        "enable_correlation_analysis": true,
+        "enable_onchain_analysis": true,
+        "enable_futures_analysis": true,
+
+        "min_market_cap_usd": 100000000,
+        "min_24h_volume_usd": 10000000,
+        "max_correlation_btc": 0.85
+    },
+
+    "ml_model_config": {
+        "comment": "机器学习模型配置",
+        "model_type": "voting_classifier",
+        "base_models": {
+            "random_forest": {
+                "n_estimators": 100,
+                "max_depth": 10,
+                "random_state": 42
+            },
+            "gradient_boosting": {
+                "n_estimators": 100,
+                "max_depth": 6,
+                "learning_rate": 0.1,
+                "random_state": 42
+            },
+            "logistic_regression": {
+                "random_state": 42,
+                "max_iter": 1000
+            }
+        },
+        "feature_selection": {
+            "enabled": true,
+            "method": "SelectKBest",
+            "k": 20
+        },
+        "cross_validation": {
+            "enabled": true,
+            "cv_folds": 5,
+            "scoring": "accuracy"
+        },
+        "model_persistence": {
+            "save_path": "models/explosive_detector_v1_2.pkl",
+            "auto_save": true,
+            "backup_count": 5
+        }
+    },
+
+    "external_apis": {
+        "comment": "外部API配置 - v1.2增强版",
+        "news_apis": {
+            "cryptopanic": {
+                "api_key": "YOUR_CRYPTOPANIC_API_KEY",
+                "enabled": false,
+                "rate_limit": 60
+            },
+            "newsapi": {
+                "api_key": "YOUR_NEWSAPI_KEY",
+                "enabled": false,
+                "rate_limit": 100
+            },
+            "coindesk": {
+                "enabled": false,
+                "rate_limit": 120
+            }
+        },
+        "social_apis": {
+            "twitter": {
+                "bearer_token": "YOUR_TWITTER_BEARER_TOKEN",
+                "enabled": false,
+                "rate_limit": 300
+            },
+            "reddit": {
+                "client_id": "YOUR_REDDIT_CLIENT_ID",
+                "client_secret": "YOUR_REDDIT_CLIENT_SECRET",
+                "enabled": false,
+                "rate_limit": 60
+            }
+        },
+        "onchain_apis": {
+            "glassnode": {
+                "api_key": "YOUR_GLASSNODE_API_KEY",
+                "enabled": false,
+                "rate_limit": 10
+            },
+            "intotheblock": {
+                "api_key": "YOUR_ITB_API_KEY",
+                "enabled": false,
+                "rate_limit": 100
+            },
+            "etherscan": {
+                "api_key": "YOUR_ETHERSCAN_API_KEY",
+                "enabled": false,
+                "rate_limit": 5
+            }
+        },
+        "futures_apis": {
+            "binance_futures": {
+                "enabled": true,
+                "rate_limit": 1200
+            },
+            "bybit": {
+                "enabled": false,
+                "rate_limit": 120
+            },
+            "okx": {
+                "enabled": false,
+                "rate_limit": 20
+            }
+        }
+    },
+
+    "custom_filters": {
+        "comment": "自定义筛选条件配置",
+        "market_data_filters": {
+            "min_market_cap_usd": 100000000,
+            "max_market_cap_usd": 2000000000000,
+            "min_24h_volume_usd": 10000000,
+            "min_circulating_supply_ratio": 0.7,
+            "max_price_change_24h": 50.0
+        },
+        "correlation_filters": {
+            "max_btc_correlation": 0.85,
+            "max_eth_correlation": 0.80,
+            "min_unique_correlation": 0.3
+        },
+        "technical_filters": {
+            "min_rsi": 20,
+            "max_rsi": 80,
+            "min_volume_ratio": 1.5,
+            "max_atr_percent": 10.0
+        },
+        "blacklist_patterns": [
+            "*BULL*", "*BEAR*", "*UP*", "*DOWN*",
+            "*3S*", "*3L*", "*HEDGE*"
+        ]
+    },
+
+    "performance_optimization": {
+        "comment": "性能优化配置",
+        "parallel_processing": {
+            "max_workers": 8,
+            "timeout_seconds": 10,
+            "batch_size": 5
+        },
+        "caching": {
+            "enabled": true,
+            "ttl_seconds": 1800,
+            "max_cache_size": 1000,
+            "cleanup_interval": 3600
+        },
+        "api_throttling": {
+            "global_rate_limit": 0.15,
+            "per_api_limits": {
+                "news": 0.5,
+                "social": 0.3,
+                "onchain": 1.0,
+                "futures": 0.1
+            }
+        }
+    },
+
+    "logging": {
+        "version": 1,
+        "disable_existing_loggers": false,
+        "formatters": {
+            "default": {
+                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            },
+            "detailed": {
+                "format": "%(asctime)s - %(name)s - %(levelname)s - %(module)s - %(funcName)s - %(message)s"
+            }
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "level": "INFO",
+                "formatter": "default",
+                "stream": "ext://sys.stdout"
+            },
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "level": "DEBUG",
+                "formatter": "detailed",
+                "filename": "logs/explosive_detector_v1_2.log",
+                "maxBytes": 20971520,
+                "backupCount": 15
+            },
+            "ml_file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "level": "DEBUG",
+                "formatter": "detailed",
+                "filename": "logs/explosive_detector_v1_2_ml.log",
+                "maxBytes": 10485760,
+                "backupCount": 10
+            }
+        },
+        "loggers": {
+            "freqtrade": {
+                "level": "INFO",
+                "handlers": ["console", "file"]
+            },
+            "ExplosiveDetector_v1_2": {
+                "level": "DEBUG",
+                "handlers": ["console", "file", "ml_file"]
+            },
+            "sklearn": {
+                "level": "WARNING",
+                "handlers": ["ml_file"]
+            }
+        },
+        "root": {
+            "level": "INFO",
+            "handlers": ["console"]
+        }
+    }
+}

@@ -1,0 +1,159 @@
+{
+    "max_open_trades": 1,
+    "stake_currency": "USDT",
+    "stake_amount": 10,
+    "dry_run": true,
+    "cancel_open_orders_on_exit": true,
+
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "ccxt_config": {
+            "enableRateLimit": true,
+            "rateLimit": 200
+        },
+        "pair_whitelist": [
+            "BTC/USDT", "ETH/USDT", "BNB/USDT", "ADA/USDT", "DOT/USDT",
+            "LINK/USDT", "XRP/USDT", "LTC/USDT", "BCH/USDT", "UNI/USDT",
+            "ATOM/USDT", "VET/USDT", "FIL/USDT", "TRX/USDT", "ETC/USDT",
+            "XLM/USDT", "THETA/USDT", "ALGO/USDT", "AAVE/USDT", "MKR/USDT"
+        ],
+        "pair_blacklist": []
+    },
+
+    "timeframe": "1h",
+    "strategy": "ExplosiveDetector_v1_1",
+    "strategy_path": "strategies/QUANT_ALEX/",
+
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+
+    "exit_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+
+    "telegram": {
+        "enabled": true,
+        "token": "YOUR_TELEGRAM_BOT_TOKEN",
+        "chat_id": "YOUR_CHAT_ID",
+        "notification_settings": {
+            "status": "on",
+            "warning": "on",
+            "startup": "on",
+            "entry": "on",
+            "entry_fill": "on",
+            "exit": "on",
+            "exit_fill": "on",
+            "protection_trigger": "on",
+            "protection_trigger_global": "on",
+            "show_candle": "on"
+        }
+    },
+
+    "api_server": {
+        "enabled": true,
+        "listen_ip_address": "127.0.0.1",
+        "listen_port": 8080,
+        "verbosity": "error",
+        "jwt_secret_key": "YOUR_JWT_SECRET",
+        "CORS_origins": [],
+        "username": "admin",
+        "password": "YOUR_PASSWORD"
+    },
+
+    "dataformat_ohlcv": "json",
+    "dataformat_trades": "jsongz",
+
+    "strategy_parameters": {
+        "comment": "ExplosiveDetector v1.1 专用参数配置",
+
+        "volume_surge_threshold": 3.0,
+        "price_momentum_threshold": 0.10,
+        "rsi_recovery_threshold": 35.0,
+        "breakout_strength_threshold": 2.0,
+        "volume_lookback": 12,
+        "momentum_lookback": 6,
+
+        "sentiment_weight": 0.25,
+        "social_heat_weight": 0.20,
+        "news_lookback_hours": 12,
+        "enable_sentiment_analysis": true,
+        "enable_social_analysis": true
+    },
+
+    "external_apis": {
+        "comment": "外部API配置 - 请替换为真实API密钥",
+        "news_apis": {
+            "cryptopanic": {
+                "api_key": "YOUR_CRYPTOPANIC_API_KEY",
+                "enabled": false
+            },
+            "newsapi": {
+                "api_key": "YOUR_NEWSAPI_KEY",
+                "enabled": false
+            }
+        },
+        "social_apis": {
+            "twitter": {
+                "bearer_token": "YOUR_TWITTER_BEARER_TOKEN",
+                "enabled": false
+            },
+            "reddit": {
+                "client_id": "YOUR_REDDIT_CLIENT_ID",
+                "client_secret": "YOUR_REDDIT_CLIENT_SECRET",
+                "enabled": false
+            }
+        }
+    },
+
+    "logging": {
+        "version": 1,
+        "disable_existing_loggers": false,
+        "formatters": {
+            "default": {
+                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            }
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "level": "INFO",
+                "formatter": "default",
+                "stream": "ext://sys.stdout"
+            },
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "level": "DEBUG",
+                "formatter": "default",
+                "filename": "logs/explosive_detector_v1_1.log",
+                "maxBytes": 10485760,
+                "backupCount": 10
+            }
+        },
+        "loggers": {
+            "freqtrade": {
+                "level": "INFO",
+                "handlers": ["console", "file"]
+            },
+            "ExplosiveDetector_v1_1": {
+                "level": "DEBUG",
+                "handlers": ["console", "file"]
+            }
+        },
+        "root": {
+            "level": "INFO",
+            "handlers": ["console"]
+        }
+    }
+}
